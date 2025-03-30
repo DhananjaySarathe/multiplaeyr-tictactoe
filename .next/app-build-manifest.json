@@ -16,6 +16,11 @@
       "static/chunks/main-app.js",
       "static/chunks/app/page.js"
     ],
+    "/new-game/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/new-game/page.js"
+    ],
     "/join-game/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",

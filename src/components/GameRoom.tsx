@@ -1,12 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Share, Copy, Loader2, Check } from 'lucide-react';
 import type { Game } from '@prisma/client';
 import { GameBoard } from './GameBoard';
-// Either remove this import if you don't have the hook
-// import { useToast } from '@/hooks/useToast';
+import { getSocket } from '@/lib/socket';
 
 interface GameRoomProps {
   initialGame: Game & {
@@ -18,57 +17,96 @@ export function GameRoom({ initialGame }: GameRoomProps) {
   const [game, setGame] = useState(initialGame);
   const [copied, setCopied] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  // If you don't have the useToast hook, remove this line
-  // const { toast } = useToast();
+  const [isConnected, setIsConnected] = useState(false);
+  const [boardState, setBoardState] = useState(Array(9).fill(null));
+  const [currentPlayer, setCurrentPlayer] = useState<string | null>(null);
+  
+  // Get player ID and determine if the current user is the host
+  const currentPlayerId = game.players.find(player => player.isHost)?.id || '';
+  const playerSymbol = game.players.find(player => player.id === currentPlayerId)?.isHost ? 'X' : 'O';
 
   useEffect(() => {
-    const eventSource = new EventSource(`/api/games/${game.code}/events`);
+    const socket = getSocket();
     
-    eventSource.onmessage = (event) => {
-      const newGame = JSON.parse(event.data);
-      setGame(newGame);
-    };
+    // Set up socket connection
+    socket.on('connect', () => {
+      setIsConnected(true);
+      socket.emit('joinGame', { 
+        gameCode: game.code, 
+        playerId: currentPlayerId 
+      });
+    });
     
-    eventSource.onerror = (error) => {
-      console.error('SSE error:', error);
-      eventSource.close();
-    };
+    socket.on('disconnect', () => {
+      setIsConnected(false);
+    });
     
+    // Game events
+    socket.on('gameMove', (data) => {
+      console.log('Move received:', data);
+      setBoardState(prev => {
+        const newBoard = [...prev];
+        newBoard[data.index] = data.symbol;
+        return newBoard;
+      });
+      
+      // Toggle current player after a move
+      setCurrentPlayer(prev => prev === 'X' ? 'O' : 'X');
+    });
+    
+    socket.on('gameStarted', (data) => {
+      console.log('Game started:', data);
+      setGame(prev => ({ ...prev, status: 'playing' }));
+      setCurrentPlayer('X'); // X always starts
+    });
+    
+    socket.on('playerJoined', (data) => {
+      console.log('Player joined:', data);
+    });
+    
+    // Clean up on unmount
     return () => {
-      eventSource.close();
+      socket.off('connect');
+      socket.off('disconnect');
+      socket.off('gameMove');
+      socket.off('gameStarted');
+      socket.off('playerJoined');
     };
-  }, [game.code]);
+  }, [game.code, currentPlayerId]);
 
   const copyGameCode = () => {
     navigator.clipboard.writeText(game.code);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-    // Replace toast with alert or console.log
     alert('Game code copied! Share this code with your friend to join the game');
   };
 
-  const startGame = async () => {
+  const handleStartGame = () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`/api/games/${game.code}/start`, {
-        method: 'POST',
-      });
-      
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to start game');
-      }
-      
-      // Replace toast with alert
-      alert('Game started! Let the battle begin!');
+      const socket = getSocket();
+      socket.emit('startGame', { gameCode: game.code });
     } catch (error) {
       console.error('Failed to start game:', error);
-      // Replace toast with alert
       alert(`Error: ${error.message || 'Failed to start game'}`);
     } finally {
       setIsLoading(false);
     }
   };
+
+  const handleMove = useCallback((index: number) => {
+    if (game.status !== 'playing' || boardState[index] !== null || currentPlayer !== playerSymbol) {
+      return;
+    }
+    
+    const socket = getSocket();
+    socket.emit('makeMove', {
+      gameCode: game.code,
+      index,
+      playerId: currentPlayerId,
+      symbol: playerSymbol
+    });
+  }, [game.status, boardState, currentPlayer, playerSymbol, game.code, currentPlayerId]);
 
   return (
     <div className="flex items-center justify-center min-h-screen p-4 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500">
@@ -91,7 +129,20 @@ export function GameRoom({ initialGame }: GameRoomProps) {
             </div>
           </div>
 
-          <GameBoard game={game} />
+          <GameBoard 
+            boardState={boardState} 
+            onMove={handleMove} 
+            isActive={game.status === 'playing' && currentPlayer === playerSymbol}
+          />
+          
+          {game.status === 'playing' && (
+            <div className="p-3 text-center rounded-lg bg-blue-50">
+              {currentPlayer === playerSymbol ? 
+                <span className="font-medium text-blue-600">Your turn</span> : 
+                <span className="text-gray-600">Waiting for opponent...</span>
+              }
+            </div>
+          )}
         </div>
 
         <div className="space-y-6">
@@ -107,7 +158,12 @@ export function GameRoom({ initialGame }: GameRoomProps) {
                   <span>{player.name}</span>
                   {player.isHost && (
                     <span className="px-2 py-1 text-xs text-indigo-600 bg-indigo-100 rounded-full">
-                      Host
+                      Host (X)
+                    </span>
+                  )}
+                  {!player.isHost && (
+                    <span className="px-2 py-1 text-xs text-red-600 bg-red-100 rounded-full">
+                      Guest (O)
                     </span>
                   )}
                 </div>
@@ -123,8 +179,8 @@ export function GameRoom({ initialGame }: GameRoomProps) {
 
           {game.players.length === 2 && game.status === 'waiting' && (
             <button
-              onClick={startGame}
-              disabled={isLoading}
+              onClick={handleStartGame}
+              disabled={isLoading || !isConnected}
               className="w-full px-6 py-3 font-medium text-white transition-all duration-200 bg-gradient-to-r from-indigo-600 to-indigo-700 rounded-xl hover:from-indigo-700 hover:to-indigo-800 disabled:opacity-50"
             >
               {isLoading ? (
@@ -132,11 +188,21 @@ export function GameRoom({ initialGame }: GameRoomProps) {
                   <Loader2 className="w-4 h-4 animate-spin" />
                   Starting...
                 </span>
+              ) : !isConnected ? (
+                'Connecting...'
               ) : (
                 'Start Game'
               )}
             </button>
           )}
+          
+          {/* Connection status indicator */}
+          <div className="text-sm text-center text-gray-500">
+            {isConnected ? 
+              <span className="text-green-500">Connected</span> : 
+              <span className="text-red-500">Disconnected</span>
+            }
+          </div>
         </div>
       </motion.div>
     </div>
