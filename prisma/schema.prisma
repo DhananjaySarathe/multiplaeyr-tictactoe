@@ -1,0 +1,31 @@
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Game {
+  id        String   @id @default(cuid())
+  code      String   @unique @db.Char(6)
+  status    String   @default("waiting") // waiting, playing, finished
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  players   Player[]
+
+  @@index([code])
+}
+
+model Player {
+  id        String   @id @default(cuid())
+  name      String
+  gameId    String
+  game      Game     @relation(fields: [gameId], references: [id])
+  joinedAt  DateTime @default(now())
+  isHost    Boolean  @default(false)
+
+  @@index([gameId])
+}
